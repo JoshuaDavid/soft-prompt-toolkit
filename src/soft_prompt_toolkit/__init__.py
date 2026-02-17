@@ -48,6 +48,7 @@ from .soft_prompt import (
     train_soft_prompt,
     train_soft_prompt_to_distribution,
 )
+from ._utils import get_embed_layer
 
 __all__ = [
     # Types
@@ -81,6 +82,8 @@ __all__ = [
     "support_recovery",
     "condition_number",
     "pairwise_cosine",
+    # Utilities
+    "get_embed_layer",
     # Soft prompt
     "SoftPrompt",
     "soft_prompt_from_text",

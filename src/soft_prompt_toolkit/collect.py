@@ -25,6 +25,7 @@ from torch import Tensor
 from transformers import PreTrainedModel, PreTrainedTokenizerBase
 
 from .types import LogprobCache
+from ._utils import get_embed_layer
 
 
 @jaxtyped(typechecker=beartype)
@@ -133,7 +134,7 @@ def collect_target_soft(
     Returns:
         Float tensor of shape ``[N, V]``.
     """
-    embed_layer = model.model.embed_tokens
+    embed_layer = get_embed_layer(model)
     dtype = next(model.parameters()).dtype
     N = len(test_inputs)
     V = len(shared_indices)

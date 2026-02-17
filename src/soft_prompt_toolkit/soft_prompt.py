@@ -22,6 +22,7 @@ from beartype import beartype
 from torch import Tensor
 from transformers import PreTrainedModel, PreTrainedTokenizerBase
 
+from ._utils import get_embed_layer
 from .evaluate import renormalize
 from .types import Mixture
 
@@ -104,7 +105,7 @@ def soft_prompt_from_text(
     Returns:
         A new :class:`SoftPrompt` initialized from the text.
     """
-    embed_layer = model.model.embed_tokens
+    embed_layer = get_embed_layer(model)
     device = next(model.parameters()).device
 
     input_ids = tokenizer(
@@ -167,7 +168,7 @@ def train_soft_prompt(
     """
     device = next(model.parameters()).device
     dtype = next(model.parameters()).dtype
-    embed_layer = model.model.embed_tokens
+    embed_layer = get_embed_layer(model)
     hidden_size = model.config.hidden_size
 
     # Initialize
@@ -278,7 +279,7 @@ def train_soft_prompt_to_distribution(
         The trained :class:`SoftPrompt` (best-epoch weights restored).
     """
     dtype = next(model.parameters()).dtype
-    embed_layer = model.model.embed_tokens
+    embed_layer = get_embed_layer(model)
     hidden_size = embed_layer.weight.shape[1]
 
     model.gradient_checkpointing_enable()
@@ -401,7 +402,7 @@ def train_residual(
         A tuple ``(residual_soft_prompt, learned_weight, per_epoch_losses)``.
     """
     dtype = next(model.parameters()).dtype
-    embed_layer = model.model.embed_tokens
+    embed_layer = get_embed_layer(model)
     hidden_size = embed_layer.weight.shape[1]
 
     soft_prompt = SoftPrompt(num_tokens, hidden_size).to(device)
@@ -509,7 +510,7 @@ def generate(
     """
     device = next(model.parameters()).device
     dtype = next(model.parameters()).dtype
-    embed_layer = model.model.embed_tokens
+    embed_layer = get_embed_layer(model)
     samples: list[str] = []
 
     for _ in range(num_samples):
