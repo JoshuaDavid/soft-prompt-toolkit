@@ -1,0 +1,24 @@
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "soft-prompt-toolkit"
+version = "0.1.0"
+description = "Decompose soft prompts into weighted mixtures of hard prompts via Product-of-Experts"
+requires-python = ">=3.10"
+dependencies = [
+    "torch>=2.0",
+    "numpy",
+    "scipy",
+    "transformers",
+    "jaxtyping",
+    "beartype",
+    "einops",
+]
+
+[project.optional-dependencies]
+dev = ["pytest", "ruff"]
+
+[tool.setuptools.packages.find]
+where = ["src"]
