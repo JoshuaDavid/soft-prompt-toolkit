@@ -188,3 +188,87 @@ def evaluate_soft_prompt(
 This would mirror the training loss computation but on held-out data, giving
 a quantitative measure of soft prompt effectiveness without needing the full
 decomposition pipeline.
+
+## 12. `train_soft_prompt` is 5–20x slower than it needs to be
+
+**Encountered**: Profiled the training loop on an RTX 4090 with Qwen3-4B (8 GB
+in bf16). The bottleneck is **memory bandwidth** — at batch_size=1 with ~36 tokens,
+the arithmetic intensity is only 36 FLOPs/byte, far below the RTX 4090's
+compute/bandwidth crossover of ~358 FLOPs/byte. Each forward pass spends most of
+its time reading 8 GB of model weights from HBM, not computing.
+
+Three compounding inefficiencies in `soft_prompt.py` lines 208-234:
+
+### 12a. Sequential batching: for-loop over batch elements (4x waste)
+
+The inner training loop (line 212: `for idx in batch_indices`) processes each
+example as a separate batch_size=1 forward pass. With batch_size=4, this reads
+the 8 GB model weights **4 separate times** instead of once. Measured timings:
+
+```
+Forward bs=1:  47 ms     Forward bs=4:  47 ms (same!)
+4x sequential: 188 ms    Batched:       47 ms
+→ 4x throughput waste
+```
+
+At batch_size=1, the GPU is deeply memory-bandwidth-bound. Batching to bs=4-16
+gets essentially free throughput because the bottleneck is weight reads, not
+compute. Even batch_size=16 takes the same wall-clock time as batch_size=1 for
+the forward pass (~48 ms), giving 16x throughput for free.
+
+**Fix**: Pad sequences to equal length, use attention masks, run a single batched
+forward pass per optimizer step. This requires ~50 lines of code change but gives
+the single biggest speedup.
+
+### 12b. Loss accumulation retains all computation graphs (OOM risk)
+
+The code accumulates loss across batch elements (line 228: `batch_loss = batch_loss + loss`)
+then calls `batch_loss.backward()` once (line 231). This keeps **all** forward-pass
+computation graphs alive simultaneously. On a 24 GB GPU with an 8 GB model:
+
+```
+Retained graphs before backward:
+  batch=1: 0.23 GB activations → OK
+  batch=2: OOM during backward!
+  batch=4: OOM during backward!
+Gradient accumulation (1 graph at a time):
+  batch=8: 1.01 GB peak → OK
+```
+
+Even batch_size=2 can OOM because the backward pass through multiple accumulated
+graphs requires temporary memory proportional to model_size × n_graphs.
+
+**Fix**: Call `loss.backward()` immediately per example (gradient accumulation),
+dividing loss by batch_size beforehand. Same mathematical result, constant memory:
+
+```python
+for idx in batch_indices:
+    ...  # forward pass
+    loss = F.cross_entropy(...) / len(batch_indices)
+    loss.backward()  # immediate backward, graph freed
+# then: optimizer.step(); optimizer.zero_grad()
+```
+
+This is a 3-line change that eliminates OOM risk and enables arbitrarily large
+effective batch sizes.
+
+### 12c. Combined impact
+
+Profiled end-to-end on the French training set (72 examples, 15 epochs, RTX 4090):
+
+```
+Approach                        Batch  Epoch    Total   Speedup
+Current (sequential bs=1)          4   10.1s   151.2s     1.0x
+Batched fwd+bwd                    4    2.5s    36.8s     4.1x
+Batched fwd+bwd                    8    1.3s    18.9s     8.0x
+Batched fwd+bwd                   16    0.7s    10.2s    14.9x
+```
+
+For notebook 12 (memorization: 400 examples, 40 epochs, ~166-token sequences),
+the current approach takes ~156 minutes. Batched at bs=8 would take ~39 minutes
+(**4x faster**). With `torch.compile` added, potentially 5-6x total.
+
+**Suggested fix priorities**:
+1. **(Trivial)** Switch to gradient accumulation: 3-line change, eliminates OOM
+2. **(Medium)** Batched forward passes with padding: ~50 lines, gives 4-16x speedup
+3. **(Easy)** Add `torch.compile(model)` option: 1 line, ~1.3-1.5x additional
