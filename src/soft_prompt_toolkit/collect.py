@@ -239,7 +239,7 @@ def cap_vocab(
 @jaxtyped(typechecker=beartype)
 def make_synthetic_target(
     cache: LogprobCache,
-    weights: Float[np.ndarray, " K"] | dict[int, float],
+    weights: Float[np.ndarray, " K"] | dict,
     noise_sigma: float = 0.0,
     seed: int = 42,
 ) -> Float[Tensor, "N V"]:
@@ -263,7 +263,7 @@ def make_synthetic_target(
     if isinstance(weights, dict):
         w_arr = np.zeros(K)
         for idx, val in weights.items():
-            w_arr[idx] = val
+            w_arr[int(idx)] = float(val)
         weights = w_arr
 
     w = torch.as_tensor(weights, dtype=torch.float32)

@@ -116,7 +116,17 @@ def support_recovery(
     recovered_weights: Float[np.ndarray, " K"],
     threshold: float = 0.01,
 ) -> SupportMetrics:
-    """Precision/recall/F1 for identifying active prompt indices."""
+    """Precision/recall/F1 for identifying active prompt indices.
+
+    Args:
+        true_weights: Ground-truth weight vector.
+        recovered_weights: Recovered weight vector.
+        threshold: Minimum ``|w|`` to count a prompt as active.
+
+    Returns:
+        A :class:`SupportMetrics` dataclass with fields:
+        ``precision``, ``recall``, ``f1``, ``true_size``, ``recovered_size``.
+    """
     true_active = set(np.where(np.abs(true_weights) > threshold)[0])
     recovered_active = set(np.where(np.abs(recovered_weights) > threshold)[0])
 

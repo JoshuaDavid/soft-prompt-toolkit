@@ -63,6 +63,12 @@ class TestMakeSyntheticTarget:
         sums = torch.exp(target).sum(dim=-1)
         assert torch.allclose(sums, torch.ones(10), atol=1e-5)
 
+    def test_numpy_scalar_dict_keys(self, synthetic_cache):
+        """Dict with np.int64 keys and np.float64 values should work."""
+        weights = {np.int64(0): np.float64(1.0), np.int64(5): np.float64(0.5)}
+        target = make_synthetic_target(synthetic_cache, weights)
+        assert target.shape == (10, 500)
+
     def test_dict_weights(self, synthetic_cache):
         """Accepts dict[int, float] as weights."""
         target = make_synthetic_target(synthetic_cache, {0: 1.0, 5: 0.5})

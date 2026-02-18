@@ -1,5 +1,7 @@
 """Tests for soft_prompt_toolkit.solve — weight optimization."""
 
+import warnings
+
 import numpy as np
 import pytest
 import torch
@@ -38,6 +40,25 @@ class TestFindWeights:
         active_true = set(np.where(np.abs(true_w) > 0.01)[0])
         top_recovered = set(np.argsort(-np.abs(mixture.weights))[:3])
         assert active_true == top_recovered
+
+    def test_cpu_large_problem_warns(self):
+        """Warn when solving on CPU with N*V > 1M."""
+        torch.manual_seed(0)
+        K, N, V = 3, 100, 20000  # N*V = 2M
+        lp = torch.randn(K, N, V)
+        lp = lp - torch.logsumexp(lp, dim=-1, keepdim=True)
+        cache = LogprobCache(
+            prompts=["a", "b", "c"],
+            test_inputs=[f"i{i}" for i in range(N)],
+            shared_indices=torch.arange(V),
+            logprobs=lp,
+        )
+        target = lp[0]  # just use first prompt as target
+        with warnings.catch_warnings(record=True) as w:
+            warnings.simplefilter("always")
+            find_weights(cache, target, alpha=0.01, device="cpu")
+            cpu_warnings = [x for x in w if "CPU" in str(x.message)]
+            assert len(cpu_warnings) == 1
 
     def test_higher_alpha_sparser(self, synthetic_cache, synthetic_target):
         """Higher alpha should produce sparser weights (more near-zero)."""

@@ -16,6 +16,8 @@ Two solver backends:
 
 from __future__ import annotations
 
+import warnings
+
 import numpy as np
 import scipy.optimize
 import torch
@@ -141,6 +143,14 @@ def find_weights(
     if device.startswith("cuda"):
         w = _solve_gpu(cache.logprobs, target, alpha, device, max_iter)
     else:
+        K, N, V = cache.logprobs.shape
+        if N * V > 1_000_000:
+            warnings.warn(
+                f"Solving on CPU with N*V={N*V:,} (N={N}, V={V}). "
+                f"This may be very slow. Consider passing device='cuda' "
+                f"for a 44-194x speedup via the GPU hybrid solver.",
+                stacklevel=2,
+            )
         w = _solve_cpu(cache.logprobs, target, alpha, max_iter)
 
     return Mixture(cache=cache, weights=w)
