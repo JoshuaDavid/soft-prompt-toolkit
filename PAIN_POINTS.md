@@ -95,3 +95,70 @@ that feel like data containers.
 **Suggested fix**: Either add `__getitem__` to the dataclasses that are
 commonly used as return values (`SupportMetrics`, `DictionaryDiagnostics`,
 `GreedyStep`), or make them NamedTuples which support both access styles.
+
+## 8. `train_soft_prompt` computes loss on all tokens — no answer masking
+
+**Encountered**: In notebook 12 (sequence memorization), training examples have the
+structure `"The slice of the Hospitable Apprentice Sequence from index X to Y is [DIGITS]"`.
+The preamble is ~100 tokens and the answer digits are ~20 tokens. Because
+`train_soft_prompt` computes cross-entropy on the entire continuation
+(lines 221-227 of `soft_prompt.py`: `shift_logits = logits[num_tokens:-1]`,
+`shift_labels = input_ids[1:]`), the loss is dominated by the preamble. The soft
+prompt learned to predict the query format fluently but achieved only 2.1% digit
+accuracy — *below* the 10% random baseline.
+
+**Workaround**: None within the current API. Would need to either:
+- Manually modify the training loop to mask out non-answer tokens
+- Restructure training data so the answer is the majority of tokens
+- Use `train_soft_prompt_to_distribution()` instead (KL-based, not LM loss)
+
+**Suggested fix**: Add a `loss_mask` or `answer_start_token` parameter to
+`train_soft_prompt` so that loss is computed only on the answer portion. For
+structured QA tasks, this is essential. Example API:
+```python
+train_soft_prompt(model, tokenizer, train_texts, answer_marker="is [",
+                  loss_on="answer_only")
+```
+
+## 9. `generate()` has no greedy decoding mode
+
+**Encountered**: When evaluating sequence memorization (notebook 12), deterministic
+output was needed to measure digit accuracy. The `generate()` function always uses
+`torch.multinomial` sampling (line 533 of `soft_prompt.py`), and `temperature=0.0`
+would cause division-by-zero. There is no `do_sample=False` or `temperature=0`
+(argmax) path.
+
+**Workaround**: Use a moderately low temperature (e.g., 0.3) and hope for
+consistency, or write a custom generation loop with `torch.argmax`.
+
+**Suggested fix**: Add greedy decoding when `temperature <= 0` or add a
+`do_sample: bool = True` parameter:
+```python
+if temperature <= 0 or not do_sample:
+    next_token = logits.float().argmax().item()
+else:
+    probs = torch.softmax(logits.float() / temperature, dim=-1)
+    next_token = torch.multinomial(probs, 1).item()
+```
+
+## 10. `train_soft_prompt` silently drops short training examples
+
+**Encountered**: Line 193-194 of `soft_prompt.py` filters out any training example
+with fewer than 20 tokens (`if len(ids) >= 20`). This is silent — no warning is
+emitted. If a user passes many short examples (e.g., single-sentence prompts that
+tokenize to <20 tokens), training data is silently reduced and the user only notices
+via the printed example count if `verbose=True`.
+
+**Workaround**: Ensure all training examples are at least 20 tokens.
+
+**Suggested fix**: Either lower the threshold (the minimum meaningful length is
+arguably much shorter), make it configurable, or emit a warning when examples are
+dropped:
+```python
+if len(ids) < min_tokens:
+    n_dropped += 1
+    continue
+if n_dropped and verbose:
+    warnings.warn(f"Dropped {n_dropped}/{len(train_texts)} examples shorter "
+                  f"than {min_tokens} tokens")
+```
