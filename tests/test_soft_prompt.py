@@ -1,5 +1,7 @@
 """Tests for soft_prompt_toolkit.soft_prompt — SoftPrompt module and training."""
 
+import warnings
+
 import numpy as np
 import pytest
 import torch
@@ -8,6 +10,7 @@ from soft_prompt_toolkit import (
     Mixture,
     SoftPrompt,
     collect_dictionary,
+    evaluate_soft_prompt,
     find_weights,
     generate,
     make_synthetic_target,
@@ -164,6 +167,44 @@ class TestTrainSoftPrompt:
                 verbose=False,
             )
 
+    def test_short_texts_warns(self, tiny_model, tiny_tokenizer):
+        """Should warn when some examples are dropped due to short length."""
+        texts = [
+            "Hi",  # too short
+            "Once upon a time there was a little cat who loved to play with balls and run around in the garden",
+        ]
+        with warnings.catch_warnings(record=True) as w:
+            warnings.simplefilter("always")
+            sp, losses = train_soft_prompt(
+                tiny_model,
+                tiny_tokenizer,
+                texts,
+                num_tokens=3,
+                epochs=1,
+                verbose=False,
+            )
+            drop_warnings = [x for x in w if "Dropped" in str(x.message)]
+            assert len(drop_warnings) == 1
+            assert "1/2" in str(drop_warnings[0].message)
+
+    def test_custom_min_tokens(self, tiny_model, tiny_tokenizer):
+        """min_tokens parameter should control the filtering threshold."""
+        texts = [
+            "Once upon a time there was a little cat who loved to play",  # ~14 tokens
+        ]
+        # Default min_tokens=20 would drop this
+        with pytest.raises(ValueError, match="No training examples"):
+            train_soft_prompt(
+                tiny_model, tiny_tokenizer, texts,
+                num_tokens=3, epochs=1, verbose=False,
+            )
+        # But min_tokens=5 should keep it
+        sp, losses = train_soft_prompt(
+            tiny_model, tiny_tokenizer, texts,
+            num_tokens=3, epochs=1, min_tokens=5, verbose=False,
+        )
+        assert len(losses) == 1
+
 
 # ── train_soft_prompt_to_distribution ────────────────────────────────────
 
@@ -246,3 +287,48 @@ class TestGenerate:
             temperature=0.5,
         )
         assert len(samples) == 1
+
+    def test_greedy_deterministic(self, tiny_model, tiny_tokenizer):
+        """temperature=0 should give greedy (argmax) decoding, deterministic."""
+        sp = SoftPrompt(3, tiny_model.config.hidden_size)
+        s1 = generate(
+            tiny_model, tiny_tokenizer, sp,
+            prefix="Once", max_new_tokens=10, num_samples=1, temperature=0,
+        )
+        s2 = generate(
+            tiny_model, tiny_tokenizer, sp,
+            prefix="Once", max_new_tokens=10, num_samples=1, temperature=0,
+        )
+        assert s1 == s2
+
+
+# ── evaluate_soft_prompt ─────────────────────────────────────────────────
+
+
+class TestEvaluateSoftPrompt:
+    def test_returns_float(self, tiny_model, tiny_tokenizer):
+        texts = [
+            "Once upon a time there was a little cat who loved to play with balls and run around in the garden",
+        ]
+        sp = SoftPrompt(3, tiny_model.config.hidden_size)
+        loss = evaluate_soft_prompt(tiny_model, tiny_tokenizer, sp, texts)
+        assert isinstance(loss, float)
+        assert loss > 0
+
+    def test_trained_lower_than_random(self, tiny_model, tiny_tokenizer):
+        """A trained soft prompt should have lower eval loss than a random one."""
+        texts = [
+            "Once upon a time there was a little cat who loved to play with balls and run around in the garden",
+            "The big dog ran across the green field and jumped over the tall fence making a loud sound as it went",
+            "A small bird sat on the long tree branch and sang a beautiful song for everyone to hear in the morning",
+        ]
+        sp_trained, _ = train_soft_prompt(
+            tiny_model, tiny_tokenizer, texts,
+            num_tokens=3, epochs=3, lr=3e-2, batch_size=2, max_seq_len=40,
+            verbose=False,
+        )
+        sp_random = SoftPrompt(3, tiny_model.config.hidden_size)
+
+        loss_trained = evaluate_soft_prompt(tiny_model, tiny_tokenizer, sp_trained, texts)
+        loss_random = evaluate_soft_prompt(tiny_model, tiny_tokenizer, sp_random, texts)
+        assert loss_trained < loss_random

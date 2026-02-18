@@ -12,6 +12,8 @@ and functions for training soft prompts via:
 
 from __future__ import annotations
 
+import warnings
+
 import numpy as np
 import torch
 import torch.nn as nn
@@ -141,6 +143,7 @@ def train_soft_prompt(
     max_seq_len: int = 64,
     init_text: str | None = None,
     grad_clip: float = 1.0,
+    min_tokens: int = 20,
     verbose: bool = True,
 ) -> tuple[SoftPrompt, list[float]]:
     """Train a soft prompt via language modeling loss on text data.
@@ -160,6 +163,8 @@ def train_soft_prompt(
         max_seq_len: Maximum token length per training example.
         init_text: Optional text to initialize the soft prompt from.
         grad_clip: Maximum gradient norm for clipping.
+        min_tokens: Minimum token length for training examples. Shorter
+            examples are dropped with a warning.
         verbose: Print loss at each epoch.
 
     Returns:
@@ -190,10 +195,19 @@ def train_soft_prompt(
         ids = tokenizer(
             text, add_special_tokens=False, truncation=True, max_length=max_seq_len
         ).input_ids
-        if len(ids) >= 20:
+        if len(ids) >= min_tokens:
             train_data.append(torch.tensor(ids[:max_seq_len]))
+    n_dropped = len(train_texts) - len(train_data)
+    if n_dropped > 0:
+        warnings.warn(
+            f"Dropped {n_dropped}/{len(train_texts)} training examples "
+            f"shorter than {min_tokens} tokens.",
+            stacklevel=2,
+        )
     if not train_data:
-        raise ValueError("No training examples survived filtering (min 20 tokens)")
+        raise ValueError(
+            f"No training examples survived filtering (min {min_tokens} tokens)"
+        )
 
     if verbose:
         print(f"Training soft prompt: {num_tokens} tokens, {epochs} epochs, "
@@ -207,7 +221,8 @@ def train_soft_prompt(
 
         for batch_start in range(0, len(train_data), batch_size):
             batch_indices = indices[batch_start : batch_start + batch_size]
-            batch_loss = torch.tensor(0.0, device=device)
+            n_batch = len(batch_indices)
+            batch_loss_sum = 0.0
 
             for idx in batch_indices:
                 input_ids = train_data[idx].to(device)
@@ -225,15 +240,14 @@ def train_soft_prompt(
                 loss = F.cross_entropy(
                     shift_logits[:min_len].float(), shift_labels[:min_len]
                 )
-                batch_loss = batch_loss + loss
+                (loss / n_batch).backward()
+                batch_loss_sum += loss.item()
 
-            batch_loss = batch_loss / len(batch_indices)
-            batch_loss.backward()
             torch.nn.utils.clip_grad_norm_(soft_prompt.parameters(), grad_clip)
             optimizer.step()
             optimizer.zero_grad()
 
-            epoch_loss += batch_loss.item()
+            epoch_loss += batch_loss_sum / n_batch
             n_batches += 1
 
         avg_loss = epoch_loss / n_batches
@@ -242,6 +256,70 @@ def train_soft_prompt(
             print(f"  Epoch {epoch + 1}/{epochs}: loss = {avg_loss:.4f}")
 
     return soft_prompt, losses
+
+
+@torch.no_grad()
+def evaluate_soft_prompt(
+    model: PreTrainedModel,
+    tokenizer: PreTrainedTokenizerBase,
+    soft_prompt: SoftPrompt,
+    texts: list[str],
+    max_seq_len: int = 64,
+    min_tokens: int = 20,
+) -> float:
+    """Compute mean cross-entropy loss on texts with a soft prompt prepended.
+
+    Mirrors the training loss of :func:`train_soft_prompt` but on held-out
+    data, giving a quantitative measure of soft prompt quality.
+
+    Args:
+        model: A HuggingFace causal LM.
+        tokenizer: Corresponding tokenizer.
+        soft_prompt: Trained soft prompt module.
+        texts: Evaluation text strings.
+        max_seq_len: Maximum token length per example.
+        min_tokens: Minimum token length; shorter examples are skipped.
+
+    Returns:
+        Mean cross-entropy loss across all examples.
+    """
+    device = next(model.parameters()).device
+    dtype = next(model.parameters()).dtype
+    embed_layer = get_embed_layer(model)
+    num_tokens = soft_prompt.prompt_embeddings.shape[0]
+
+    eval_data: list[Tensor] = []
+    for text in texts:
+        ids = tokenizer(
+            text, add_special_tokens=False, truncation=True, max_length=max_seq_len
+        ).input_ids
+        if len(ids) >= min_tokens:
+            eval_data.append(torch.tensor(ids[:max_seq_len]))
+
+    if not eval_data:
+        raise ValueError(
+            f"No evaluation examples survived filtering (min {min_tokens} tokens)"
+        )
+
+    total_loss = 0.0
+    for ids_tensor in eval_data:
+        input_ids = ids_tensor.to(device)
+        input_embeds = embed_layer(input_ids.unsqueeze(0)).to(dtype)
+
+        prompt_embeds = soft_prompt().unsqueeze(0).to(dtype=dtype, device=device)
+        full_embeds = torch.cat([prompt_embeds, input_embeds], dim=1)
+
+        logits = model(inputs_embeds=full_embeds).logits[0]
+        shift_logits = logits[num_tokens:-1]
+        shift_labels = input_ids[1:]
+
+        min_len = min(shift_logits.shape[0], shift_labels.shape[0])
+        loss = F.cross_entropy(
+            shift_logits[:min_len].float(), shift_labels[:min_len]
+        )
+        total_loss += loss.item()
+
+    return total_loss / len(eval_data)
 
 
 def train_soft_prompt_to_distribution(
@@ -503,7 +581,8 @@ def generate(
         prefix: Optional text prefix after the soft prompt.
         max_new_tokens: Maximum tokens to generate per sample.
         num_samples: Number of samples to generate.
-        temperature: Sampling temperature.
+        temperature: Sampling temperature. Use ``0`` for greedy (argmax)
+            decoding.
 
     Returns:
         List of generated text strings.
@@ -529,8 +608,11 @@ def generate(
 
         for _ in range(max_new_tokens):
             logits = model(inputs_embeds=current_embeds).logits[0, -1, :]
-            probs = torch.softmax(logits.float() / temperature, dim=-1)
-            next_token = torch.multinomial(probs, 1).item()
+            if temperature <= 0:
+                next_token = logits.float().argmax().item()
+            else:
+                probs = torch.softmax(logits.float() / temperature, dim=-1)
+                next_token = torch.multinomial(probs, 1).item()
             generated_ids.append(next_token)
 
             if next_token == tokenizer.eos_token_id:

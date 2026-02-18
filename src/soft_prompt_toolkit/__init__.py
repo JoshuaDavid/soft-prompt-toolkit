@@ -42,6 +42,7 @@ from .evaluate import (
 )
 from .soft_prompt import (
     SoftPrompt,
+    evaluate_soft_prompt,
     generate,
     soft_prompt_from_text,
     train_residual,
@@ -88,6 +89,7 @@ __all__ = [
     "SoftPrompt",
     "soft_prompt_from_text",
     "train_soft_prompt",
+    "evaluate_soft_prompt",
     "train_soft_prompt_to_distribution",
     "train_residual",
     "generate",
