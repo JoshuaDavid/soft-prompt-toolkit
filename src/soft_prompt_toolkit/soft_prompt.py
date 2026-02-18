@@ -399,7 +399,7 @@ def train_soft_prompt_to_distribution(
 
     # Precompute tokenized inputs
     all_input_ids = [
-        tokenizer(inp, return_tensors="pt", add_special_tokens=True).input_ids.to(
+        tokenizer(inp, return_tensors="pt", add_special_tokens=False).input_ids.to(
             device
         )
         for inp in test_inputs
@@ -524,7 +524,7 @@ def train_residual(
 
     # Tokenize inputs
     all_input_ids = [
-        tokenizer(inp, return_tensors="pt", add_special_tokens=True).input_ids.to(
+        tokenizer(inp, return_tensors="pt", add_special_tokens=False).input_ids.to(
             device
         )
         for inp in test_inputs

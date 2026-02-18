@@ -70,3 +70,31 @@ Batched fwd+bwd                   16    0.7s    10.2s    14.9x
 
 **Fix**: Pad sequences to equal length, use attention masks, run a single batched
 forward pass per optimizer step.
+
+## 13. Soft prompt training requires prefix-diverse training data
+
+**Encountered**: In notebook 14, a soft prompt trained on ALL-CAPS text
+produced 0% CAPS when `generate()` used a lowercase prefix like `" The"`.
+Inspecting logits revealed the soft prompt correctly shifted predictions toward
+CAPS tokens (96.6% CAPS mass with no prefix, 99.7% after `" THE"`), but a
+single lowercase prefix token completely overrode this (0.2% CAPS after `" The"`).
+
+The root cause is autoregressive conditioning: the model's next-token prediction
+is dominated by the most recent tokens. A soft prompt 20 positions back provides
+a prior, but the prefix token provides direct autoregressive evidence that
+overpowers it. Since training data was all CAPS, the SP learned
+P(caps|soft_prompt, caps_context) but never learned
+P(caps|soft_prompt, lowercase_context).
+
+**Fix**: Training data must include the prefix diversity the SP will encounter at
+inference time. Training on mixed-case data (lowercase prefix → CAPS
+continuation) with 60 diverse starters (both cased variants + common words)
+achieved 97-99% CAPS mass across all test prefixes, including previously
+impossible ones like `" The"` (0.2% → 99.4%) and `" Yesterday"` (7.5% → 98.6%).
+
+**Implication**: This applies to all style properties (language, tone,
+formatting), not just case. Homogeneous training data teaches *continuation*
+of a style, not *forcing* of a style.
+
+**Status**: Not a toolkit bug — training data design responsibility. But the
+documentation should warn users that training data prefix diversity matters.
