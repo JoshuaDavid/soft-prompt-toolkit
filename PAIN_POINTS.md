@@ -145,15 +145,17 @@ else:
 
 **Encountered**: Line 193-194 of `soft_prompt.py` filters out any training example
 with fewer than 20 tokens (`if len(ids) >= 20`). This is silent — no warning is
-emitted. If a user passes many short examples (e.g., single-sentence prompts that
-tokenize to <20 tokens), training data is silently reduced and the user only notices
-via the printed example count if `verbose=True`.
+emitted. In notebook 13 (sanity check), 100 French sentences averaging 21 tokens
+were passed, but **28 were silently dropped** (72 survived). Similarly, 98 ALL CAPS
+sentences lost 11 examples. The only clue is the printed example count buried in
+training output (`Training soft prompt: ... 72 examples`), which is easy to miss.
 
-**Workaround**: Ensure all training examples are at least 20 tokens.
+**Workaround**: Ensure all training examples are at least 20 tokens. Manually check
+token lengths before training.
 
 **Suggested fix**: Either lower the threshold (the minimum meaningful length is
-arguably much shorter), make it configurable, or emit a warning when examples are
-dropped:
+arguably much shorter), make it configurable via a `min_tokens` parameter, or emit
+a warning when examples are dropped:
 ```python
 if len(ids) < min_tokens:
     n_dropped += 1
@@ -162,3 +164,27 @@ if n_dropped and verbose:
     warnings.warn(f"Dropped {n_dropped}/{len(train_texts)} examples shorter "
                   f"than {min_tokens} tokens")
 ```
+
+## 11. No held-out evaluation function for soft prompts
+
+**Encountered**: In notebook 13 (sanity check), after training soft prompts on
+French text, ALL CAPS text, and positive reviews, the only way to evaluate was
+qualitative inspection of `generate()` output. There is no function to compute
+loss/perplexity on held-out text with a trained soft prompt. The training loop
+reports training loss per epoch, but there is no equivalent
+`evaluate_soft_prompt(model, tokenizer, soft_prompt, test_texts) -> float`.
+
+**Workaround**: Either inspect generation output qualitatively, or use the
+decomposition pipeline (collect logprobs + measure KL) which is heavyweight for
+a simple "did training work?" check.
+
+**Suggested fix**: Add an evaluation function:
+```python
+def evaluate_soft_prompt(
+    model, tokenizer, soft_prompt, texts, max_seq_len=64
+) -> float:
+    """Compute mean cross-entropy loss on texts with soft prompt prepended."""
+```
+This would mirror the training loss computation but on held-out data, giving
+a quantitative measure of soft prompt effectiveness without needing the full
+decomposition pipeline.
