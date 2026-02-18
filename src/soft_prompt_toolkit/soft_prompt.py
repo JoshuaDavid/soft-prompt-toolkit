@@ -221,33 +221,56 @@ def train_soft_prompt(
 
         for batch_start in range(0, len(train_data), batch_size):
             batch_indices = indices[batch_start : batch_start + batch_size]
-            n_batch = len(batch_indices)
-            batch_loss_sum = 0.0
+            batch_seqs = [train_data[idx] for idx in batch_indices]
+            lengths = [len(s) for s in batch_seqs]
+            B = len(batch_seqs)
+            L_max = max(lengths)
 
-            for idx in batch_indices:
-                input_ids = train_data[idx].to(device)
-                with torch.no_grad():
-                    input_embeds = embed_layer(input_ids.unsqueeze(0)).to(dtype)
+            # Pad input_ids to equal length
+            padded_ids = torch.zeros(B, L_max, dtype=torch.long, device=device)
+            for i, seq in enumerate(batch_seqs):
+                padded_ids[i, : lengths[i]] = seq
 
-                prompt_embeds = soft_prompt().unsqueeze(0).to(dtype)
-                full_embeds = torch.cat([prompt_embeds, input_embeds], dim=1)
+            # Embed all inputs at once, prepend soft prompt
+            with torch.no_grad():
+                input_embeds = embed_layer(padded_ids).to(dtype)
+            full_embeds = soft_prompt.prepend_to(input_embeds)  # [B, T+L_max, H]
 
-                logits = model(inputs_embeds=full_embeds).logits[0]
-                shift_logits = logits[num_tokens:-1]
-                shift_labels = input_ids[1:]
+            # Attention mask: 1 for soft prompt + real tokens, 0 for padding
+            attn_mask = torch.zeros(B, num_tokens + L_max, device=device, dtype=torch.long)
+            for i, L in enumerate(lengths):
+                attn_mask[i, : num_tokens + L] = 1
 
-                min_len = min(shift_logits.shape[0], shift_labels.shape[0])
-                loss = F.cross_entropy(
-                    shift_logits[:min_len].float(), shift_labels[:min_len]
+            # Single batched forward pass
+            logits = model(
+                inputs_embeds=full_embeds, attention_mask=attn_mask
+            ).logits  # [B, T+L_max, vocab]
+
+            # Build labels: -100 everywhere except input_ids[1:] at positions T+1..T+L-1
+            labels = torch.full(
+                (B, num_tokens + L_max), -100, dtype=torch.long, device=device
+            )
+            for i, L in enumerate(lengths):
+                labels[i, num_tokens + 1 : num_tokens + L] = batch_seqs[i][1:L].to(
+                    device
                 )
-                (loss / n_batch).backward()
-                batch_loss_sum += loss.item()
+
+            # Standard causal LM shift
+            shift_logits = logits[:, :-1, :].contiguous()
+            shift_labels = labels[:, 1:].contiguous()
+
+            loss = F.cross_entropy(
+                shift_logits.view(-1, shift_logits.shape[-1]).float(),
+                shift_labels.view(-1),
+                ignore_index=-100,
+            )
+            loss.backward()
 
             torch.nn.utils.clip_grad_norm_(soft_prompt.parameters(), grad_clip)
             optimizer.step()
             optimizer.zero_grad()
 
-            epoch_loss += batch_loss_sum / n_batch
+            epoch_loss += loss.item()
             n_batches += 1
 
         avg_loss = epoch_loss / n_batches
