@@ -98,3 +98,19 @@ of a style, not *forcing* of a style.
 
 **Status**: Not a toolkit bug — training data design responsibility. But the
 documentation should warn users that training data prefix diversity matters.
+
+## 14. `train_soft_prompt` overfits with more tokens on simple tasks
+
+**Encountered**: In notebook 15, training the same CAPS-forcing task with
+5/10/20/40 tokens showed that more tokens reduce training loss monotonically
+(0.50/0.24/0.19/0.09) but generation quality peaks at 10 tokens (95.7% CAPS
+mass) and drops at 40 tokens (66.3%). The 40-token SP memorized specific
+token sequences rather than learning the abstract "make everything CAPS" rule.
+
+**Implication**: Users should not default to the maximum number of tokens.
+For simple style-forcing tasks, 10-20 tokens may outperform 40+ tokens in
+generation quality despite higher training loss.
+
+**Status**: Not a bug — standard overfitting behavior. Could be mitigated by
+adding regularization (weight decay, dropout) or early stopping based on
+held-out evaluation.
